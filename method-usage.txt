@@ -1,0 +1,6 @@
+Why?
+
+This model can be generalized on data which the model isn't trained from. According to the paper, this model is only trained on the upper-abdominal, lung and head-and-neck parts of the body.
+
+Bad:
+Needs to be trained from scractch as using teeth is too general
