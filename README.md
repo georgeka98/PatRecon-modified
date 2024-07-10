@@ -51,6 +51,14 @@ Original Traceback (most recent call last):
 RuntimeError: stack expects each tensor to be equal size, but got [400, 400, 280] at entry 0 and [536, 536, 336] at entry 3
 ```
 
+
+This error is thrown when I run the train.py with the corresponding parameters:
+
+```
+python3 train.py --data_root /Volumes/Georges\ NVME\ 2\ 1/data_xray_to_cbct --train_file /Volumes/Georges\ NVME\ 2\ 1/data_xray_to_cbct/train.csv --val_file /Volumes/Georges\ NVME\ 2\ 1/data_xray_to_cbct/val.csv --batch_size 8 --epochs 100 --learning_rate 1e-4 --input_size 128 --output_channel 1 --num_workers 4 --exp my_experiment --arch ReconNet --print_freq 10 --output_path ./output --resume best --loss l1 --optim adam --num_views 3 --init_gain 0.02 --init_type normal --weight_decay 0
+```
+
+
 # 7. Citation
 
 ```
