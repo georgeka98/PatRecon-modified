@@ -14,9 +14,9 @@ def convert_nii_to_bin(nii_path, bin_path):
     data.tofile(bin_path)
 
 # Directory containing the NIfTI files
-nii_dir = '/Users/georgeka/Desktop/uni/tooth project internship/tooth-project-website/server/xray-to-cbct/../data/cbct'
+nii_dir = '/Volumes/Georges NVME 2 1/cbct'
 # Directory to save the binary files
-bin_dir = '/Users/georgeka/Desktop/uni/tooth project internship/tooth-project-website/server/xray-to-cbct/data'
+bin_dir = '/Volumes/Georges NVME 2 1/cbct_bin'
 
 if not os.path.exists(bin_dir):
     os.makedirs(bin_dir)
@@ -72,10 +72,12 @@ if len([name for name in os.listdir(bin_dir) if name.endswith('.bin')]) == 50:
     exit()
 
 
-limit = 50
+limit = 100
+print('Converting NIfTI files to binary...')
 for filename in os.listdir(nii_dir):
     if limit == 0:
         break
+    # print(filename, limit, nii_dir)
     if filename.endswith('.nii.gz'):
         nii_path = os.path.join(nii_dir, filename)
         bin_filename = filename.replace('.nii.gz', '.bin')

@@ -2,6 +2,8 @@
 
 ## Implementing it with retrainer script.
 
+NOTE! This is still in progress. Cloning and running this model won't work at this moment. 
+
 # 7. Citation
 
 ```

@@ -1,106 +1,61 @@
 import argparse
-import os
-import random
-import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import transforms
-from net import ReconNet  # Ensure that this module is correctly implemented and accessible
-from data_loader import get_train_val_data_loaders
+from trainer import Trainer_ReconNet
+from dataset import TeethDataset
+import torchvision.transforms as transforms
 
-
-# Device configuration
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-# Define the training function
-def train(model, train_loader, criterion, optimizer, epoch):
-    print(device)
-    model.train()
-    running_loss = 0.0
-    for i, batch in enumerate(train_loader):
-        inputs, targets = batch['image'], batch['cbct']
-        inputs, targets = inputs.to(device), targets.to(device)
-        optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, targets)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-    print(f'Epoch [{epoch}], Loss: {running_loss / len(train_loader)}')
-
-# Define the validation function
-def validate(model, val_loader, criterion):
-    model.eval()
-    val_loss = 0.0
-    with torch.no_grad():
-        for i, (inputs, targets) in enumerate(val_loader):
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            val_loss += loss.item()
-    print(f'Validation Loss: {val_loss / len(val_loader)}')
-    return val_loss / len(val_loader)
-
-# Main function to train the model
 def main():
-    parser = argparse.ArgumentParser(description='Train X-ray to CBCT model')
-    
-    # Required arguments
+    parser = argparse.ArgumentParser(description='Train the model')
+    parser.add_argument('--data_root', type=str, required=True, help='Path to the data root directory')
     parser.add_argument('--train_file', type=str, required=True, help='Path to the training CSV file')
     parser.add_argument('--val_file', type=str, required=True, help='Path to the validation CSV file')
-    parser.add_argument('--data_root', type=str, required=True, help='Root directory containing data')
-
-    # Training parameters
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for training')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--num_views', type=int, default=1, help='Number of views')
-    parser.add_argument('--input_size', type=int, default=128, help='Input size')
-    parser.add_argument('--output_size', type=int, default=128, help='Output size')
-    parser.add_argument('--num_workers', type=int, default=4, help='Number of data loading workers')
+    parser.add_argument('--input_size', type=int, default=128, help='Input size of images')
+    parser.add_argument('--output_channel', type=int, default=128, help='Output size of images')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
+    parser.add_argument('--exp', type=str, default='experiment', help='Experiment name')
+    parser.add_argument('--arch', type=str, default='ReconNet', help='Model architecture')
+    parser.add_argument('--print_freq', type=int, default=10, help='Print frequency')
+    parser.add_argument('--output_path', type=str, default='./output', help='Output path')
+    parser.add_argument('--resume', type=str, default='best', help='Resume from checkpoint')
+    parser.add_argument('--loss', type=str, default='l1', help='Loss function')
+    parser.add_argument('--optim', type=str, default='adam', help='Optimizer')
+    parser.add_argument('--num_views', type=int, default=1, help='Number of input views')
+    parser.add_argument('--init_gain', type=float, default=0.02, help='Initialization gain')
+    parser.add_argument('--init_type', type=str, default='normal', help='Initialization type')
+    parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay')
+    parser.add_argument('--lr', type=float, default=0.001, help='Adam learning rate')
 
     args = parser.parse_args()
 
-    # Set random seed for reproducibility
-    torch.manual_seed(0)
-    np.random.seed(0)
-    random.seed(0)
+    # Create datasets and data loaders
+    transform = transforms.Compose([
+        transforms.Resize((args.input_size, args.input_size)),
+        transforms.ToTensor(),
+    ])
+    train_dataset = TeethDataset(csv_file=args.train_file, root_dir=args.data_root, transform=transform)
+    val_dataset = TeethDataset(csv_file=args.val_file, root_dir=args.data_root, transform=transform)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
-    # Device configuration
-    global device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Initialize the trainer
+    trainer = Trainer_ReconNet(args)
 
-    # Get data loaders
-    print(args.train_file, args.val_file)
-    train_loader, val_loader = get_train_val_data_loaders(args.train_file, args.val_file, args)
-
-    # Define model, loss function, and optimizer
-    model = ReconNet(in_channels=args.num_views, out_channels=1).to(device)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    # Load from checkpoint if needed
+    start_epoch = 0
+    if args.resume:
+        start_epoch = trainer.load()
 
     # Training loop
-    best_val_loss = float('inf')
-    for epoch in range(args.epochs):
-        train(model, train_loader, criterion, optimizer, epoch)
-        val_loss = validate(model, val_loader, criterion)
-
-        # Save the best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), 'best_model.pth')
-            print('Model saved.')
+    for epoch in range(start_epoch, args.epochs):
+        print(f"Epoch {epoch + 1}/{args.epochs}")
+        train_loss = trainer.train_epoch(train_loader, epoch)
+        val_loss = trainer.validate(val_loader)
+        print(f"Validation Loss: {val_loss:.5f}")
+        trainer.save(val_loss, epoch)
 
 if __name__ == '__main__':
     main()
-
-print(os.path.abspath(os.getcwd()))
-# Example usage:
-
-# python3 train.py --data_root /data --train_file /train.csv --val_file /val.csv --batch_size 8 
-# --epochs 100 --learning_rate 1e-4 --num_views 1 --input_size 128 --output_size 128 
-# --num_workers 4
-
-# python3 train.py --data_root /data --train_file /train.csv --val_file /val.csv --batch_size 8 --epochs 100 --learning_rate 1e-4 --num_views 1 --input_size 128 --output_size 128 --num_workers 4

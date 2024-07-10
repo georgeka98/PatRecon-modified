@@ -18,55 +18,54 @@ class Trainer_ReconNet(nn.Module):
         self.resume = args.resume
         self.best_loss = 1e5
 
+        # Determine if a GPU is available
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         # create model
         print("=> Creating model...")
         if self.arch == 'ReconNet':
             self.model = ReconNet(in_channels=args.num_views, out_channels=args.output_channel, gain=args.init_gain, init_type=args.init_type)
-            self.model = nn.DataParallel(self.model).cuda()
+            self.model = nn.DataParallel(self.model).to(self.device)
         else:
             assert False, print('Not implemented model: {}'.format(self.arch))
 
         # define loss function
         if args.loss == 'l1':
             # L1 loss
-            self.criterion = nn.L1Loss(size_average=True, reduce=True).cuda() 
+            self.criterion = nn.L1Loss()
         elif args.loss == 'l2':
             # L2 loss (mean-square-error)
-            self.criterion = nn.MSELoss(size_average=True, reduce=True).cuda()
+            self.criterion = nn.MSELoss()
         else:
             assert False, print('Not implemented loss: {}'.format(args.loss))
 
         # define optimizer
         if args.optim == 'adam':
             self.optimizer = torch.optim.Adam(self.model.parameters(), 
-                                            lr=args.lr,
-                                            betas=(0.5, 0.999),
-                                            weight_decay=args.weight_decay,  
-                                            )
+                                              lr=args.lr,
+                                              betas=(0.5, 0.999),
+                                              weight_decay=args.weight_decay)
         else:
             assert False, print('Not implemented optimizer: {}'.format(args.optim))
 
-
-
     def train_epoch(self, train_loader, epoch):
-
         train_loss = AverageMeter()
 
         # train mode
         self.model.train()
 
-        for i, (input, target) in enumerate(train_loader):
+        print("=> Start training...")
 
-            input_var, target_var = Variable(input), Variable(target)
-            input_var = input_var.cuda()
-            target_var = target_var.cuda()
+        for i, (input, target) in enumerate(train_loader):
+            input = input.to(self.device)
+            target = target.to(self.device)
 
             # compute output
-            output = self.model(input_var)
+            output = self.model(input)
 
             # compute loss
-            loss = self.criterion(output, target_var)
-            train_loss.update(loss.data.item(), input.size(0))
+            loss = self.criterion(output, target)
+            train_loss.update(loss.item(), input.size(0))
 
             # compute gradient and do SGD step
             self.optimizer.zero_grad()
@@ -88,9 +87,7 @@ class Trainer_ReconNet(nn.Module):
 
         return train_loss.avg
 
-
     def validate(self, val_loader):
-
         val_loss = AverageMeter()
         batch_time = AverageMeter()
 
@@ -99,44 +96,44 @@ class Trainer_ReconNet(nn.Module):
 
         end = time.time()
         for i, (input, target) in enumerate(val_loader):
-
-            input_var, target_var = Variable(input), Variable(target)
-            input_var = input_var.cuda()
-            target_var = target_var.cuda()
+            input = input.to(self.device)
+            target = target.to(self.device)
 
             # compute output
-            output = self.model(input_var)
+            with torch.no_grad():
+                output = self.model(input)
 
             # compute loss
-            loss = self.criterion(output, target_var)
-            val_loss.update(loss.data.item(), input.size(0))
+            loss = self.criterion(output, target)
+            val_loss.update(loss.item(), input.size(0))
 
             # measure elapsed time
-            batch_time.update(time.time()-end)
+            batch_time.update(time.time() - end)
             end = time.time()
 
-            # if i % args.print_freq == 0:
-            print('Val: [{0}/{1}]\t'
-                  'Time {batch_time.val: .3f} ({batch_time.avg:.3f})\t'
-                  'Loss {loss.val:.5f} ({loss.avg:.5f})\t'.format(
-                   i, len(val_loader), 
-                   batch_time=batch_time, 
-                   loss=val_loss))
+            # display info
+            if i % self.print_freq == 0:
+                print('Val: [{0}/{1}]\t'
+                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Loss {loss.val:.5f} ({loss.avg:.5f})\t'.format(
+                       i, len(val_loader), 
+                       batch_time=batch_time, 
+                       loss=val_loss))
 
         return val_loss.avg
-
 
     def save(self, curr_val_loss, epoch):
         # update best loss and save checkpoint
         is_best = curr_val_loss < self.best_loss
         self.best_loss = min(curr_val_loss, self.best_loss)
 
-        state = {'epoch': epoch + 1,
-                'arch': self.arch,
-                'state_dict': self.model.state_dict(),
-                'best_loss': self.best_loss,
-                'optimizer': self.optimizer.state_dict(),
-                }
+        state = {
+            'epoch': epoch + 1,
+            'arch': self.arch,
+            'state_dict': self.model.state_dict(),
+            'best_loss': self.best_loss,
+            'optimizer': self.optimizer.state_dict(),
+        }
 
         filename = osp.join(self.output_path, 'curr_model.pth.tar')
         best_filename = osp.join(self.output_path, 'best_model.pth.tar')
@@ -148,9 +145,8 @@ class Trainer_ReconNet(nn.Module):
             print('!! Saving best checkpoint: {}'.format(best_filename))
             shutil.copyfile(filename, best_filename)
 
-
     def load(self):
-
+        start_epoch = 0
         if self.resume == 'best':
             ckpt_file = osp.join(self.output_path, 'best_model.pth.tar')
         elif self.resume == 'final':
@@ -166,8 +162,7 @@ class Trainer_ReconNet(nn.Module):
             self.best_loss = checkpoint['best_loss']
             self.model.load_state_dict(checkpoint['state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(ckpt_file, checkpoint['epoch']))
+            print("=> loaded checkpoint '{}' (epoch {})".format(ckpt_file, checkpoint['epoch']))
         else:
             print("=> no checkpoint found at '{}'".format(ckpt_file))
 
