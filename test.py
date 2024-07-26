@@ -17,15 +17,13 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from torch.utils.data import Dataset, DataLoader
 from torch.autograd import Variable
-from net import ReconNet
-from sklearn.metrics import mean_absolute_error
-from sklearn.metrics import mean_squared_error
-from skimage.measure import compare_mse, compare_nrmse, compare_psnr, compare_ssim
+from net import ReconNet  # Ensure that this module is correctly implemented and accessible
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from skimage import metrics
 from skimage import io
 from PIL import Image
 import matplotlib.pyplot as plt
 plt.switch_backend('agg')
-
 
 parser = argparse.ArgumentParser(description='PyTorch 3D Reconstruction Training')
 parser.add_argument('--exp', type=int, default=1, 
@@ -47,71 +45,72 @@ parser.add_argument('--test', type=int, default=1,
 parser.add_argument('--vis_plane', type=int, default=0,
                     help='visualization plane of 3D images: [0,1,2]')
 
+class MedReconDataset(Dataset):
+    """3D Reconstruction Dataset."""
+    def __init__(self, args, exp_path, csv_file=None, data_dir=None, transform=None):
+        self.args = args
+        self.exp_path = exp_path
+        self.transform = transform
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, idx):
+        images = np.zeros((self.args.input_size, self.args.input_size, self.args.num_views), dtype=np.uint8)      ### input image size (H, W, C)
+        ### load image
+        for view_idx in range(self.args.num_views):
+            image_path = os.path.join(self.exp_path, 'data/2D_projection_{}.jpg'.format(view_idx+1))
+            ### resize 2D images
+            img = Image.open(image_path).resize((self.args.input_size, self.args.input_size))
+            images[:, :, view_idx] = np.array(img)
+        if self.transform:
+            images = self.transform(images)
+
+        ### load target
+        volume_path = os.path.join(self.exp_path, 'data/3D_CT.bin')
+        volume = np.fromfile(volume_path, dtype=np.float32)
+        volume = np.reshape(volume, (-1, self.args.output_size, self.args.output_size))
+
+        ### scaling normalize
+        volume = volume - np.min(volume)
+        volume = volume / np.max(volume)
+        volume = torch.from_numpy(volume)
+
+        return (images, volume)
+
 def main():
     global args
     global exp_path
     args = parser.parse_args()
-    # exp_path = './exp{}'.format(args.exp)
     exp_path = './exp'
 
-    # set random seed for GPUs for reproducible
+    # set random seed for reproducible results
     torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.backends.cudnn.deterministic = True
 
-    print('Testing Experiement {} ...................'.format(args.exp))
+    print('Testing Experiment {} ...................'.format(args.exp))
     if args.exp == 1:
         args.output_channel = 46
     else:
-        assert False, print('Not legal experiment index!')
+        assert False, 'Not a legal experiment index!'
 
     # define model
     model = ReconNet(in_channels=args.num_views, out_channels=args.output_channel)
-    model = torch.nn.DataParallel(model).cuda()
+    model = torch.nn.DataParallel(model)
 
     # define loss function
-    criterion = nn.MSELoss(size_average=True, reduce=True).cuda()
+    criterion = nn.MSELoss(reduction='mean')
 
     # enable CUDNN benchmark
     cudnn.benchmark = True
 
-    # customized dataset
-    class MedReconDataset(Dataset):
-        """ 3D Reconstruction Dataset."""
-        def __init__(self, csv_file=None, data_dir=None, transform=None):
-            self.transform = transform
-
-        def __len__(self):
-            return 1
-
-        def __getitem__(self, idx):
-            images = np.zeros((args.input_size, args.input_size, args.num_views), dtype=np.uint8)      ### input image size (H, W, C)
-            ### load image
-            for view_idx in range(args.num_views):
-                image_path = os.path.join(exp_path, 'data/2D_projection_{}.jpg'.format(view_idx+1))
-                ### resize 2D images
-                img = Image.open(image_path).resize((args.input_size, args.input_size))
-                images[:, :, view_idx] = np.array(img)
-            if self.transform:
-                images = self.transform(images)
-
-            ### load target
-            volume_path = os.path.join(exp_path, 'data/3D_CT.bin')
-            volume = np.fromfile(volume_path, dtype=np.float32)
-            volume = np.reshape(volume, (-1, args.output_size, args.output_size))
-
-            ### scaling normalize
-            volume = volume - np.min(volume)
-            volume = volume / np.max(volume)
-            volume = torch.from_numpy(volume)
-
-            return (images, volume)
-
     normalize = transforms.Normalize(mean=[0.516], std=[0.264])
     test_dataset = MedReconDataset(
-        transform = transforms.Compose([
+        args=args,
+        exp_path=exp_path,
+        transform=transforms.Compose([
                         transforms.ToTensor(),
                         normalize,
                         ]))
@@ -126,7 +125,7 @@ def main():
     ckpt_file = os.path.join(exp_path, 'model/model.pth.tar')
     if os.path.isfile(ckpt_file):
         print("=> loading checkpoint '{}' ".format(ckpt_file))
-        checkpoint = torch.load(ckpt_file)
+        checkpoint = torch.load(ckpt_file, map_location=torch.device('cpu'))
         best_loss = checkpoint['best_loss']
         model.load_state_dict(checkpoint['state_dict'])
         print("=> loaded checkpoint '{}' ".format(ckpt_file))
@@ -158,16 +157,14 @@ def test(val_loader, model, criterion, mode):
     pred = np.zeros((args.test, args.output_channel, args.output_size, args.output_size), dtype=np.float32)
     for i, (input, target) in enumerate(val_loader):
         input_var, target_var = Variable(input), Variable(target)
-        input_var, target_var = input_var.cuda(), target_var.cuda()
-
         output = model(input_var)
         loss = criterion(output, target_var)
         losses.update(loss.data.item(), input.size(0))
         pred[i, :, :, :] = output.data.float()
 
         print('{0}: [{1}/{2}]\t'
-          'Val Loss {loss.val:.5f} ({loss.avg:.5f})\t'.format(
-           mode, i, len(val_loader), loss=losses))
+              'Val Loss {loss.val:.5f} ({loss.avg:.5f})\t'.format(
+               mode, i, len(val_loader), loss=losses))
     print('Average {} Loss: {y:.5f}\t'.format(mode, y=losses.avg))
 
     save_path = os.path.join(exp_path, 'result')
@@ -199,24 +196,39 @@ def getGroundtruth(idx, normalize=True):
     return ctslices
 
 def getErrorMetrics(im_pred, im_gt, mask=None):
-    im_pred = np.array(im_pred).astype(np.float)
-    im_gt = np.array(im_gt).astype(np.float)
+    im_pred = np.array(im_pred).astype(np.float64)
+    im_gt = np.array(im_gt).astype(np.float64)
+    
     # sanity check
-    assert(im_pred.flatten().shape==im_gt.flatten().shape)
+    assert im_pred.flatten().shape == im_gt.flatten().shape
+    
+    # Determine data range
+    data_range = im_gt.max() - im_gt.min()
+    
     # RMSE
-    rmse_pred = compare_nrmse(im_true=im_gt, im_test=im_pred)
+    rmse_pred = np.sqrt(mean_squared_error(y_true=im_gt.flatten(), y_pred=im_pred.flatten()))
+    
     # PSNR
-    psnr_pred = compare_psnr(im_true=im_gt, im_test=im_pred)
+    psnr_pred = metrics.peak_signal_noise_ratio(im_gt, im_pred, data_range=data_range)
+    
     # SSIM
-    ssim_pred = compare_ssim(X=im_gt, Y=im_pred)
+    ssim_pred = metrics.structural_similarity(im_gt, im_pred, data_range=data_range)
+    
     # MSE
     mse_pred = mean_squared_error(y_true=im_gt.flatten(), y_pred=im_pred.flatten())
+    
     # MAE
     mae_pred = mean_absolute_error(y_true=im_gt.flatten(), y_pred=im_pred.flatten())
+    
     print("Compare prediction with groundtruth CT:")
-    print('mae: {mae_pred:.4f} | mse: {mse_pred:.4f} | rmse: {rmse_pred:.4f} | psnr: {psnr_pred:.4f} | ssim: {ssim_pred:.4f}'
-          .format(mae_pred=mae_pred, mse_pred=mse_pred, rmse_pred=rmse_pred, psnr_pred=psnr_pred, ssim_pred=ssim_pred))
+    print('mae: {mae_pred:.4f} | mse: {mse_pred:.4f} | rmse: {rmse_pred:.4f} | '
+          'psnr: {psnr_pred:.4f} | ssim: {ssim_pred:.4f}'.format(
+          mae_pred=mae_pred, mse_pred=mse_pred, rmse_pred=rmse_pred, psnr_pred=psnr_pred, ssim_pred=ssim_pred))
+    
     return mae_pred, mse_pred, rmse_pred, psnr_pred, ssim_pred
+
+
+
 
 def imageSave(pred, groundtruth, plane, save_path):
     seq = range(pred.shape[plane])
@@ -232,6 +244,15 @@ def imageSave(pred, groundtruth, plane, save_path):
             gt = groundtruth[:, :, slice_idx]
         else:
             assert False
+
+        print(gt.shape, pd.shape)
+
+        # only show the image slice remove the background and keep the dimentions the same as the input
+        plt.imshow(pd, interpolation='none', cmap='gray')
+        plt.axis('off')
+        plt.savefig(os.path.join(save_path, 'slice_Plane_{}_ImageSlice_{}.png'.format(plane, slice_idx+1)), bbox_inches='tight', pad_inches=0, transparent=True)
+        plt.close()
+
         f = plt.figure()
         f.add_subplot(1,3,1)
         plt.imshow(pd, interpolation='none', cmap='gray')
